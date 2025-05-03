@@ -1,4 +1,4 @@
-from dash import dash, dcc, html, dash_table
+from dash import dash, dcc, html, dash_table, Input, Output
 import plotly.graph_objects as go
 import pandas as pd
 import plotly.express as px
@@ -39,6 +39,9 @@ cluster_steps  = [10,  50, 100]               # up to 10, up to 50, 50+
 cluster_sizes  = [10,  20,  30]               # px diameter of each bubble
 cluster_colors = ['lightblue', 'lightgreen','lightcoral']
 
+point_color = 'red'  # color of individual points 
+point_size = 8   # px diameter of individual points
+
 # Build map figure using Plotly Express
 fig_map = go.Figure(go.Scattermapbox(
     lat=df['lat'],
@@ -48,20 +51,18 @@ fig_map = go.Figure(go.Scattermapbox(
 
     # regular markers for individual points
     marker=go.scattermapbox.Marker(
-        size=8,
-        color=df['price'],
-        colorscale='Viridis',
-        cmin=df['price'].min(),
-        cmax=df['price'].max(),
-        showscale=True
+        size=point_size,
+        color=point_color,
+        showscale=False
     ),
 
     # CLUSTER styling
     cluster=go.scattermapbox.Cluster(
-        enabled=True,      # turn on clustering
+        enabled=True,
         step=cluster_steps,
         size=cluster_sizes,
         color=cluster_colors,
+        maxzoom=10,
         opacity=0.8
     )
 ))
@@ -69,7 +70,7 @@ fig_map = go.Figure(go.Scattermapbox(
 fig_map.update_layout(
     mapbox_style='open-street-map',
     mapbox_center={'lat': df['lat'].mean(), 'lon': df['long'].mean()},
-    mapbox_zoom=10,
+    mapbox_zoom=15,
     margin={'l':0,'r':0,'t':30,'b':0},
     title='NYC Airbnb Listings (clustered bubbles)'
 )
@@ -78,20 +79,111 @@ app = dash.Dash(__name__)
 app.title = "New York AirBnb"
 server = app.server
 
-# Layout with map and data table
-app.layout = html.Div([
-    html.H1("NYC Airbnb Map and Listings", style={'textAlign': 'center'}),
-    dcc.Graph(id='map', figure=fig_map),
-    html.H2("Listings Table", style={'marginTop': '2rem'}),
-    dash_table.DataTable(
-        id='table',
-        columns=[{"name": i, "id": i} for i in df.reset_index().columns],
-        data=df.reset_index().to_dict('records'),
-        page_size=10,
-        style_table={'overflowX': 'auto'},
-        style_cell={'textAlign': 'left', 'padding': '5px'},
+# --- App layout with sidebar + main area ---
+app.layout = html.Div(style={'display': 'flex', 'height': '100vh'}, children=[
+
+    # --- Sidebar (left) ---
+    html.Div(style={
+        'width': '250px',
+        'padding': '20px',
+        'backgroundColor': '#f8f9fa',
+        'boxShadow': '2px 0 5px rgba(0,0,0,0.1)'
+    }, children=[
+        html.H3("Filters"),
+        html.Label("Price range"),
+        dcc.RangeSlider(
+            id='price-slider',
+            min=df['price'].min(),
+            max=df['price'].max(),
+            step=100,
+            value=[df['price'].quantile(0.05), df['price'].quantile(0.95)],
+            tooltip={'always_visible': False, 'placement': 'bottom'}
+        ),
+        html.Br(),
+        html.Label("Neighbourhood group"),
+       dcc.Dropdown(
+            id='neigh-dropdown',
+            options=[
+                {'label': grp, 'value': grp}
+                for grp in sorted(df['neighbourhood group'].dropna().unique())
+                if isinstance(grp, str) and grp.strip() != ""
+            ],
+            multi=True,
+            value=[],
+            placeholder="All groups"
+        ),
+        html.Br(),
+        html.Label("Room type"),
+        dcc.Checklist(
+            id='roomtype-checklist',
+            options=[{'label': rt, 'value': rt} for rt in df['room type'].unique()],
+            value=df['room type'].unique().tolist()
+        )
+    ]),
+
+    # --- Main content (right) ---
+    html.Div(style={'flex': '1', 'padding': '20px', 'overflowY': 'auto'}, children=[
+        html.H1("NYC Airbnb Map and Listings", style={'textAlign':'center'}),
+        dcc.Graph(id='map-graph'),
+        html.H2("Listings Table", style={'marginTop': '2rem'}),
+        dash_table.DataTable(
+            id='table',
+            columns=[{"name": i, "id": i} for i in df.reset_index().columns],
+            page_size=10,
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'},
+        )
+    ])
+])
+# --- Callback to filter data and update both graph & table ---
+@app.callback(
+    [Output('map-graph', 'figure'),
+     Output('table',      'data')],
+    [Input('price-slider',      'value'),
+     Input('neigh-dropdown',    'value'),
+     Input('roomtype-checklist','value')]
+)
+def update_outputs(price_range, selected_groups, selected_rooms):
+    low, high = price_range
+
+    # Filter step by step
+    dff = df[(df['price'] >= low) & (df['price'] <= high)]
+    if selected_groups:
+        dff = dff[dff['neighbourhood group'].isin(selected_groups)]
+    if selected_rooms:
+        dff = dff[dff['room type'].isin(selected_rooms)]
+
+    # Map figure (clustered)
+    fig = go.Figure(go.Scattermapbox(
+        lat=dff['lat'],
+        lon=dff['long'],
+        mode='markers',
+        text=dff.apply(lambda r: f"{r['name']}<br>${r['price']:.0f}<br>Score: {r['score']}", axis=1),
+        hoverinfo='text',
+        marker=go.scattermapbox.Marker(
+            size=point_size,
+            color=point_color,
+            showscale=False
+        ),
+        cluster=go.scattermapbox.Cluster(
+            enabled=True,
+            step=cluster_steps,
+            size=cluster_sizes,
+            color=cluster_colors,
+            maxzoom=15,
+            opacity=0.8
+        )
+    ))
+    fig.update_layout(
+        mapbox_style='open-street-map',
+        mapbox_center={'lat': df['lat'].mean(), 'lon': df['long'].mean()},
+        mapbox_zoom=10,
+        margin={'l':0,'r':0,'t':30,'b':0}
     )
-], style={'maxWidth': '1200px', 'margin': 'auto'})
+
+    # Table data
+    table_data = dff.reset_index().to_dict('records')
+    return fig, table_data
 
 if __name__ == '__main__':
     app.run(debug=True)
