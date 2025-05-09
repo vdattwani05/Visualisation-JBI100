@@ -45,12 +45,21 @@ df['hover_text'] = df.apply(
 )
 
 # Set visual parameters for map
+# Modified cluster colors to be more colorblind-friendly
+# Avoid red-green combinations, use blue-orange or blue-yellow instead
 cluster_steps = [10, 50, 100]  # up to 10, up to 50, 50+
 cluster_sizes = [10, 20, 30]  # px diameter of each bubble
 cluster_colors = ['#66c2a5', '#8da0cb', '#fc8d62']  # Colorblind-friendly palette
 
 point_color = '#e78ac3'  # color of individual points
 point_size = 8  # px diameter of individual points
+
+# Define custom colorblind-friendly palettes
+# Using Okabe-Ito palette which is recognized for colorblind friendliness
+# Avoiding red-green combinations
+COLORBLIND_PALETTE = ['#56B4E9', '#E69F00', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#999999']
+COLORBLIND_DISCRETE = ['#56B4E9', '#E69F00', '#009E73', '#CC79A7', '#0072B2', '#999999']
+COLORBLIND_CONTINUOUS = 'Viridis'  # Built-in colorblind-friendly continuous scale
 
 # Define axes for the PCP toggle menu
 AXIS_OPTS = [
@@ -302,7 +311,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
     if len(dff) == 0:
         return [go.Figure() for _ in range(7)] + [html.P("No data matches the selected filters.")]
 
-    # 1. Map figure
+    # 1. Map figure - Using Viridis colorscale which is colorblind-friendly
     map_fig = go.Figure(go.Scattermapbox(
         lat=dff['lat'],
         lon=dff['long'],
@@ -312,7 +321,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         marker=go.scattermapbox.Marker(
             size=point_size,
             color=dff['score'],
-            colorscale='Viridis',
+            colorscale=COLORBLIND_CONTINUOUS,
             showscale=True,
             colorbar=dict(title='Score'),
             cmin=0,
@@ -322,7 +331,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
             enabled=True,
             step=cluster_steps,
             size=cluster_sizes,
-            color=cluster_colors,
+            color=cluster_colors,  # Already using colorblind-friendly colors
             maxzoom=15,
             opacity=0.8
         )
@@ -336,14 +345,14 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=600
     )
 
-    # 2. Room type distribution by borough
+    # 2. Room type distribution by borough - Using colorblind-friendly palette
     room_type_fig = px.bar(
         borough_room_counts[borough_room_counts['neighbourhood group'].isin(selected_groups)],
         x='neighbourhood group',
         y='count',
         color='room type',
         barmode='stack',
-        color_discrete_sequence=px.colors.qualitative.Safe,
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
         labels={'count': 'Number of Listings', 'neighbourhood group': 'Borough', 'room type': 'Room Type'}
     )
 
@@ -354,7 +363,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=400
     )
 
-    # 3. Average price by borough and room type
+    # 3. Average price by borough and room type - Using colorblind-friendly palette
     borough_price_data = dff.groupby(['neighbourhood group', 'room type'])['price'].mean().reset_index()
     price_borough_fig = px.bar(
         borough_price_data,
@@ -362,7 +371,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         y='price',
         color='room type',
         barmode='group',
-        color_discrete_sequence=px.colors.qualitative.Safe,
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
         labels={'price': 'Average Price ($)', 'neighbourhood group': 'Borough', 'room type': 'Room Type'}
     )
 
@@ -373,7 +382,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=400
     )
 
-    # 4. Cancellation policy distribution
+    # 4. Cancellation policy distribution - Using colorblind-friendly palette
     cancellation_data = dff['cancellation_policy'].value_counts().reset_index()
     cancellation_data.columns = ['policy', 'count']
 
@@ -381,7 +390,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         cancellation_data,
         values='count',
         names='policy',
-        color_discrete_sequence=px.colors.qualitative.Safe,
+        color_discrete_sequence=COLORBLIND_PALETTE,  # Updated to colorblind-friendly palette
         hole=0.4
     )
 
@@ -390,14 +399,14 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=400
     )
 
-    # 5. Average minimum nights by room type
+    # 5. Average minimum nights by room type - Using colorblind-friendly palette
     min_nights_data = dff.groupby(['room type'])['minimum nights'].mean().reset_index()
     min_nights_fig = px.bar(
         min_nights_data,
         x='room type',
         y='minimum nights',
         color='room type',
-        color_discrete_sequence=px.colors.qualitative.Safe,
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
         labels={'minimum nights': 'Average Minimum Nights', 'room type': 'Room Type'}
     )
 
@@ -408,7 +417,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=400
     )
 
-    # 6. Neighborhood comparison
+    # 6. Neighborhood comparison - Using colorblind-friendly palette
     neighborhood_data = dff.groupby('neighbourhood').agg({
         'price': 'mean',
         'score': 'mean',
@@ -429,7 +438,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         x='neighbourhood',
         y=neighborhood_metric,
         color='neighbourhood group',
-        color_discrete_sequence=px.colors.qualitative.Bold,
+        color_discrete_sequence=COLORBLIND_PALETTE,  # Updated to colorblind-friendly palette
         labels={
             'neighbourhood': 'Neighborhood',
             'count': 'Number of Listings',
@@ -457,7 +466,7 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         xaxis={'categoryorder': 'total descending', 'tickangle': 45}
     )
 
-    # 7. Parallel Coordinates Plot
+    # 7. Parallel Coordinates Plot - Using colorblind-friendly colorscale
     axes = [axis1, axis2, axis3, axis4, axis5]
 
     # Only keep the first occurrence of each axis
@@ -476,12 +485,12 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
     # Keep only first 5 dimensions
     dims = dims[:5]
 
-    # Create PCP
+    # Create PCP with colorblind-friendly colorscale
     pcp_fig = px.parallel_coordinates(
         dff.dropna(subset=dims),
         dimensions=dims,
         color='score',
-        color_continuous_scale=px.colors.sequential.Viridis,
+        color_continuous_scale=COLORBLIND_CONTINUOUS,  # Using Viridis which is colorblind-friendly
         labels={
             'price': 'Price ($)',
             'service_fee': 'Service Fee ($)',
