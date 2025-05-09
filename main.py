@@ -44,6 +44,11 @@ df['hover_text'] = df.apply(
     axis=1
 )
 
+# Make all the Rows in neighborhood group start with a capital letter
+df['neighbourhood group'] = df['neighbourhood group'].str.capitalize()
+# Make all the Rows in neighbourhood group that say 'Manhatan' to say 'Manhattan'
+df['neighbourhood group'] = df['neighbourhood group'].replace('Manhatan', 'Manhattan')
+
 # Set visual parameters for map
 # Modified cluster colors to be more colorblind-friendly
 # Avoid red-green combinations, use blue-orange or blue-yellow instead
