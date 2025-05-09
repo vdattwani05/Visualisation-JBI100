@@ -157,6 +157,7 @@ app.layout = html.Div([
         ], style={'width': '25%', 'padding': '20px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px',
                   'boxShadow': '2px 2px 2px lightgrey'}),
 
+        dcc.Store(id='borough-selection', data={'room_sel': [], 'price_sel': []}),  # Store selections
         # Main visualization area
         html.Div([
             # Tabs for different visualizations
@@ -178,14 +179,26 @@ app.layout = html.Div([
                             html.Div([
                                 html.H4("Room Type Distribution by Borough",
                                         style={'textAlign': 'center', 'color': '#506784'}),
-                                dcc.Graph(id='room-type-graph')
+                                dcc.Graph(
+                                    id='room-type-graph',
+                                    config={
+                                        'modeBarButtonsToAdd': ['select2d', 'lasso2d'],
+                                        'displayModeBar': True
+                                    }
+                                )
                             ], style={'width': '50%'}),
 
                             # Average price by borough and room type
                             html.Div([
                                 html.H4("Average Price by Borough and Room Type",
                                         style={'textAlign': 'center', 'color': '#506784'}),
-                                dcc.Graph(id='price-borough-graph')
+                                dcc.Graph(
+                                    id='price-borough-graph',
+                                    config={
+                                        'modeBarButtonsToAdd': ['select2d', 'lasso2d'],
+                                        'displayModeBar': True
+                                    }
+                                )
                             ], style={'width': '50%'})
                         ], style={'display': 'flex'}),
 
@@ -280,10 +293,14 @@ app.layout = html.Div([
      Input('axis-2', 'value'),
      Input('axis-3', 'value'),
      Input('axis-4', 'value'),
-     Input('axis-5', 'value')]
+     Input('axis-5', 'value'),
+     Input('room-type-graph', 'selectedData'),  
+     Input('price-borough-graph', 'selectedData')  
+    ]
 )
 def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
-                   min_nights, neighborhood_metric, axis1, axis2, axis3, axis4, axis5):
+                   min_nights, neighborhood_metric, axis1, axis2, axis3, axis4, axis5,
+                   room_selected, price_selected):
     # Filter data based on inputs
     low, high = price_range
 
@@ -301,6 +318,13 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
     # If filtered dataframe is empty, return empty figures
     if len(dff) == 0:
         return [go.Figure() for _ in range(7)] + [html.P("No data matches the selected filters.")]
+
+    sel_boroughs = set()
+    if room_selected and 'points' in room_selected:
+        sel_boroughs = {pt['x'] for pt in room_selected['points']}
+    sel_price_boroughs = set()
+    if price_selected and 'points' in price_selected:
+        sel_price_boroughs = {pt['x'] for pt in price_selected['points']}
 
     # 1. Map figure
     map_fig = go.Figure(go.Scattermapbox(
@@ -336,9 +360,17 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         height=600
     )
 
+
+    
     # 2. Room type distribution by borough
+    rtc_data = borough_room_counts[
+        borough_room_counts['neighbourhood group'].isin(selected_groups)
+    ]
+    if sel_price_boroughs:
+        rtc_data = rtc_data[rtc_data['neighbourhood group'].isin(sel_price_boroughs)]
+
     room_type_fig = px.bar(
-        borough_room_counts[borough_room_counts['neighbourhood group'].isin(selected_groups)],
+        rtc_data,
         x='neighbourhood group',
         y='count',
         color='room type',
@@ -351,11 +383,17 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         xaxis_title='Borough',
         yaxis_title='Number of Listings',
         legend_title='Room Type',
-        height=400
+        height=400,
+        dragmode='select',
+        uirevision='borough_selection',
+        selectionrevision=1
     )
 
-    # 3. Average price by borough and room type
+     # 3. Average price by borough and room type
     borough_price_data = dff.groupby(['neighbourhood group', 'room type'])['price'].mean().reset_index()
+    if sel_boroughs:
+        borough_price_data = borough_price_data[borough_price_data['neighbourhood group'].isin(sel_boroughs)]
+
     price_borough_fig = px.bar(
         borough_price_data,
         x='neighbourhood group',
@@ -365,12 +403,14 @@ def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
         color_discrete_sequence=px.colors.qualitative.Safe,
         labels={'price': 'Average Price ($)', 'neighbourhood group': 'Borough', 'room type': 'Room Type'}
     )
-
     price_borough_fig.update_layout(
         xaxis_title='Borough',
         yaxis_title='Average Price ($)',
         legend_title='Room Type',
-        height=400
+        height=400,
+        dragmode='select',
+        uirevision='borough_selection',
+        selectionrevision=1
     )
 
     # 4. Cancellation policy distribution
