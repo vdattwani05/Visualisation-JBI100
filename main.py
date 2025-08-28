@@ -1,246 +1,531 @@
-from dash import dash, dcc, html, dash_table, Input, Output
-import plotly.graph_objects as go
-import pandas as pd
+from dash import Dash, dcc, html, Input, Output, dash_table, callback_context
 import plotly.express as px
 import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
+from plotly.subplots import make_subplots
 
-# Print total rows in the dataset
-print("Total rows in the dataset: ", len(pd.read_csv('Airbnb_Open_Data.csv')))
-# ---------------------------------------------------------------
-# This is a Dash app that displays a DataTable with data from an Airbnb dataset.
-# The dataset is read from a CSV file, and some columns are dropped.
+# Load and clean the data
 df = pd.read_csv('Airbnb_Open_Data.csv', low_memory=False)
-df = df.drop(columns=['house_rules', 'country code', 'country', 'license', 'Construction year'])
+
+# Drop columns not needed for visualization
+df = df.drop(columns=['house_rules', 'country code', 'country', 'license'])
+df.rename(columns={'NAME': 'name'}, inplace=True)
+
+# Set index and clean price columns
 df.set_index('id', inplace=True)
-# Remove the '$' sign and convert the price column to float
 df['price'] = df['price'].replace(r'[\$,]', '', regex=True).astype(float)
-# Removing missing values from lat and long
-df = df.dropna(subset=['lat', 'long'])
-# Print total rows in the dataset after dropping missing values
-print("Total rows in the dataset after dropping missing values: ", len(df))
 df.rename(columns={df.columns[df.columns.str.strip() == 'service fee'][0]: 'service_fee'}, inplace=True)
 df['service_fee'] = df['service_fee'].replace(r'[\$,]', '', regex=True).astype(float)
-# First, let's ensure the columns are properly formatted
+
+# Remove missing values from essential columns
+df = df.dropna(subset=['lat', 'long', 'neighbourhood group', 'room type'])
+
+# Convert columns to appropriate types
 df['number of reviews'] = pd.to_numeric(df['number of reviews'], errors='coerce')
 df['review rate number'] = pd.to_numeric(df['review rate number'], errors='coerce')
-# right after you load df and before dropping lat/long
+df['minimum nights'] = pd.to_numeric(df['minimum nights'], errors='coerce')
+df['reviews per month'] = pd.to_numeric(df['reviews per month'], errors='coerce')
+df['availability 365'] = pd.to_numeric(df['availability 365'], errors='coerce')
+df['calculated host listings count'] = pd.to_numeric(df['calculated host listings count'], errors='coerce')
+
+# Cap availability at 365 days
+df['availability 365'] = df['availability 365'].clip(0, 365)
+
 # Create a score column that combines review count and rating
 max_reviews = df['number of reviews'].max()
 df['score'] = (df['number of reviews'] / max_reviews * 0.5 + df['review rate number'] / 5 * 0.5) * 100
 df['score'] = df['score'].round(2)
 df['score'] = df['score'].fillna(0)
-df.rename(columns={'NAME': 'name'}, inplace=True)
+
+# Create hover text for map
 df['hover_text'] = df.apply(
-    lambda r: f"{r['name']}<br>Price: ${r['price']:.0f}<br>Score: {r['score']}",
+    lambda r: f"{r['name']}<br>Price: ${r['price']:.0f}<br>Score: {r['score']}<br>Room type: {r['room type']}",
     axis=1
 )
-# ---------------------------------------------------------------
 
-cluster_steps  = [10,  50, 100]               # up to 10, up to 50, 50+
-cluster_sizes  = [10,  20,  30]               # px diameter of each bubble
-cluster_colors = ['lightblue', 'lightgreen','lightcoral']
+# Make all the Rows in neighborhood group start with a capital letter
+df['neighbourhood group'] = df['neighbourhood group'].str.capitalize()
+# Make all the Rows in neighbourhood group that say 'Manhatan' to say 'Manhattan'
+df['neighbourhood group'] = df['neighbourhood group'].replace('Manhatan', 'Manhattan')
 
-point_color = 'red'  # color of individual points 
-point_size = 8   # px diameter of individual points
+# Set visual parameters for map
+# Modified cluster colors to be more colorblind-friendly
+# Avoid red-green combinations, use blue-orange or blue-yellow instead
+cluster_steps = [10, 50, 100]  # up to 10, up to 50, 50+
+cluster_sizes = [10, 20, 30]  # px diameter of each bubble
+cluster_colors = ['#66c2a5', '#8da0cb', '#fc8d62']  # Colorblind-friendly palette
 
-# Axes for the PCP toggle menu
+point_color = '#e78ac3'  # color of individual points
+point_size = 8  # px diameter of individual points
+
+# Define custom colorblind-friendly palettes
+# Using Okabe-Ito palette which is recognized for colorblind friendliness
+# Avoiding red-green combinations
+COLORBLIND_PALETTE = ['#56B4E9', '#E69F00', '#009E73', '#F0E442', '#0072B2', '#D55E00', '#CC79A7', '#999999']
+COLORBLIND_DISCRETE = ['#56B4E9', '#E69F00', '#009E73', '#CC79A7', '#0072B2', '#999999']
+COLORBLIND_CONTINUOUS = 'Viridis'  # Built-in colorblind-friendly continuous scale
+
+# Define axes for the PCP toggle menu
 AXIS_OPTS = [
-  'price','service_fee','minimum nights','number of reviews',
-  'reviews per month','review rate number','calculated host listings count',
-  'availability 365','score','instant_bookable','cancellation_policy','room type'
+    'price', 'service_fee', 'minimum nights', 'number of reviews',
+    'reviews per month', 'review rate number', 'calculated host listings count',
+    'availability 365', 'score'
 ]
-NUM_AXES = 5
 
-# Build map figure using Plotly Express
-fig_map = go.Figure(go.Scattermapbox(
-    lat=df['lat'],
-    lon=df['long'],
-    # no per‐point text here—clusters will auto‐label themselves with counts
-    mode='markers',
+# Get neighborhood statistics for bar charts
+# Since 'id' is the index, we need to count rows differently
+neighborhood_stats = df.groupby('neighbourhood').agg({
+    'price': 'mean',
+    'score': 'mean',
+    'number of reviews': 'mean',
+    'review rate number': 'mean',
+    'neighbourhood group': 'first',  # to keep track of the borough
+})
+# Add count of listings separately
+neighborhood_stats['count'] = df.groupby('neighbourhood').size()
 
-    # regular markers for individual points
-    marker=go.scattermapbox.Marker(
-        size=point_size,
-        color=point_color,
-        showscale=False
-    ),
+borough_room_counts = df.groupby(['neighbourhood group', 'room type']).size().reset_index(name='count')
 
-    # CLUSTER styling
-    cluster=go.scattermapbox.Cluster(
-        enabled=True,
-        step=cluster_steps,
-        size=cluster_sizes,
-        color=cluster_colors,
-        maxzoom=10,
-        opacity=0.8
-    )
-))
-
-fig_map.update_layout(
-    mapbox_style='open-street-map',
-    mapbox_center={'lat': df['lat'].mean(), 'lon': df['long'].mean()},
-    mapbox_zoom=15,
-    margin={'l':0,'r':0,'t':30,'b':0},
-    title='NYC Airbnb Listings (clustered bubbles)'
-)
-# Create a Dash app instance
-app = dash.Dash(__name__)
-app.title = "New York AirBnb"
+# Initialize Dash app
+app = Dash(__name__)
+app.title = "NYC Airbnb Market Research Dashboard"
 server = app.server
 
-# --- App layout with sidebar + main area ---
-app.layout = html.Div(
-    style={'display':'flex','height':'100vh'},
-    children=[
+# Define app layout
+app.layout = html.Div([
+    html.Div([
+        html.H1("NYC Airbnb Market Research Dashboard",
+                style={'textAlign': 'center', 'color': '#506784', 'fontFamily': 'Open Sans'}),
+        html.P("Explore NYC Airbnb data to make informed investment decisions",
+               style={'textAlign': 'center', 'color': '#666666'})
+    ], style={'backgroundColor': '#f9f9f9', 'padding': '10px', 'marginBottom': '20px', 'borderRadius': '5px',
+              'boxShadow': '2px 2px 2px lightgrey'}),
 
-        # — Sidebar (filters only) —
-        html.Div(
-            style={'width':'260px','padding':'20px','background':'#f8f9fa'},
-            children=[
-                html.H3("Filters"),
-                html.Label("Price range"),
-                dcc.RangeSlider(
-                    id='price-slider',
-                    min=df['price'].min(),
-                    max=df['price'].max(),
-                    step=100,
-                    value=[df['price'].quantile(0.05), df['price'].quantile(0.95)]
-                ),
-                html.Br(),
-                html.Label("Neighbourhood group"),
-                dcc.Dropdown(
-                    id='neigh-dropdown',
-                    options=[{'label':g,'value':g} for g in sorted(df['neighbourhood group'].dropna().unique())],
-                    value=[],
-                    multi=True,
-                    placeholder="All groups"
-                ),
-                html.Br(),
-                html.Label("Room type"),
-                dcc.Checklist(
-                    id='roomtype-checklist',
-                    options=[{'label':rt,'value':rt} for rt in df['room type'].unique()],
-                    value=df['room type'].unique().tolist()
-                ),
-            ]
-        ),
+    # Main content area with sidebar and visualization area
+    html.Div([
+        # Sidebar with filters
+        html.Div([
+            html.H3("Filters", style={'marginBottom': '20px', 'color': '#506784'}),
 
-        # — Main content (map + axis selectors + PCP) —
-        html.Div(
-            style={'flex':'1','padding':'20px','overflowY':'auto'},
-            children=[
-                html.H1("NYC Airbnb Explorer", style={'textAlign':'center'}),
+            html.Label("Price Range ($)", style={'fontWeight': 'bold'}),
+            dcc.RangeSlider(
+                id='price-slider',
+                min=int(df['price'].min()),
+                max=int(min(df['price'].max(), 1000)),  # Cap at 1000 for better usability
+                step=50,
+                marks={i: f"${i}" for i in range(0, 1001, 200)},
+                value=[int(df['price'].quantile(0.05)), int(df['price'].quantile(0.75))],
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            html.Br(),
 
-                # Map
-                dcc.Graph(id='map-graph'),
-                html.Hr(),
+            html.Label("Neighborhood Group", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='neigh-dropdown',
+                options=[{'label': g, 'value': g} for g in sorted(df['neighbourhood group'].unique())],
+                value=list(df['neighbourhood group'].unique()),
+                multi=True,
+                placeholder="Select boroughs"
+            ),
+            html.Br(),
 
-                # Axis-pickers in a single row
-                html.Div(
-                    style={'display':'flex','gap':'10px','marginBottom':'20px'},
-                    children=[
-                       html.Div(
-                            style={'display':'flex','gap':'10px','marginBottom':'20px'},
-                            children=[
-                                # Axes 1–5
-                                *[
-                                    html.Div([
-                                        html.Label(f"Axis {i}"),
-                                        dcc.Dropdown(
-                                            id=f'axis-{i}',
-                                            options=[{'label': c, 'value': c} for c in AXIS_OPTS],
-                                            value=AXIS_OPTS[i-1],
-                                            clearable=False
-                                        )
-                                    ], style={'flex': '1', 'minWidth': '150px'})
-                                    for i in range(1, 6)
-                                ]
-                            ]
-                        ),
-                    ]
-                ),
+            html.Label("Room Type", style={'fontWeight': 'bold'}),
+            dcc.Checklist(
+                id='roomtype-checklist',
+                options=[{'label': ' ' + rt, 'value': rt} for rt in df['room type'].unique()],
+                value=df['room type'].unique().tolist(),
+                labelStyle={'display': 'block', 'marginBottom': '5px'}
+            ),
+            html.Br(),
 
-                # PCP
-                dcc.Graph(id='pcp-graph')
-            ]
-        )
+            html.Label("Minimum Review Rating", style={'fontWeight': 'bold'}),
+            dcc.Slider(
+                id='rating-slider',
+                min=0,
+                max=5,
+                step=0.5,
+                marks={i: str(i) for i in range(6)},
+                value=0,
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            html.Br(),
 
-    ]
-) 
+            html.Label("Minimum Nights", style={'fontWeight': 'bold'}),
+            dcc.Slider(
+                id='min-nights-slider',
+                min=1,
+                max=30,
+                step=1,
+                marks={i: str(i) for i in [1, 5, 10, 15, 20, 25, 30]},
+                value=1,
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            html.Br(),
 
-# --- Callback to filter data and update both graph & pcp ---
+            html.Div([
+                html.H4("Selected Data Statistics", style={'textAlign': 'center', 'color': '#506784'}),
+                html.Div(id='stats-container')
+            ], style={'marginTop': '20px', 'padding': '10px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px'})
+
+        ], style={'width': '25%', 'padding': '20px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px',
+                  'boxShadow': '2px 2px 2px lightgrey'}),
+
+        # Main visualization area
+        html.Div([
+            # Tabs for different visualizations
+            dcc.Tabs([
+                # Tab 1: Map View
+                dcc.Tab(label="Map View", children=[
+                    html.Div([
+                        html.P("Explore the geographic distribution of Airbnb listings across NYC boroughs.",
+                               style={'marginBottom': '10px'}),
+                        dcc.Graph(id='map-graph', style={'height': '70vh'})
+                    ], style={'padding': '20px'})
+                ]),
+
+                # Tab 2: Borough Analysis
+                dcc.Tab(label="Borough Analysis", children=[
+                    html.Div([
+                        html.Div([
+                            # Room type distribution by borough
+                            html.Div([
+                                html.H4("Room Type Distribution by Borough",
+                                        style={'textAlign': 'center', 'color': '#506784'}),
+                                dcc.Graph(id='room-type-graph')
+                            ], style={'width': '50%'}),
+
+                            # Average price by borough and room type
+                            html.Div([
+                                html.H4("Average Price by Borough and Room Type",
+                                        style={'textAlign': 'center', 'color': '#506784'}),
+                                dcc.Graph(id='price-borough-graph')
+                            ], style={'width': '50%'})
+                        ], style={'display': 'flex'}),
+
+                        html.Div([
+                            # Cancellation policy distribution
+                            html.Div([
+                                html.H4("Cancellation Policy Distribution",
+                                        style={'textAlign': 'center', 'color': '#506784'}),
+                                dcc.Graph(id='cancellation-graph')
+                            ], style={'width': '50%'}),
+
+                            # Average minimum nights by room type
+                            html.Div([
+                                html.H4("Average Minimum Nights by Room Type",
+                                        style={'textAlign': 'center', 'color': '#506784'}),
+                                dcc.Graph(id='min-nights-graph')
+                            ], style={'width': '50%'})
+                        ], style={'display': 'flex', 'marginTop': '20px'})
+                    ], style={'padding': '20px'})
+                ]),
+
+                # Tab 3: Neighborhood Comparison
+                dcc.Tab(label="Neighborhood Comparison", children=[
+                    html.Div([
+                        html.Div([
+                            html.Label("Select Metric", style={'fontWeight': 'bold'}),
+                            dcc.Dropdown(
+                                id='neighborhood-metric-dropdown',
+                                options=[
+                                    {'label': 'Number of Listings', 'value': 'count'},
+                                    {'label': 'Average Price', 'value': 'price'},
+                                    {'label': 'Average Score', 'value': 'score'},
+                                    {'label': 'Average Review Rating', 'value': 'review rate number'},
+                                    {'label': 'Average Number of Reviews', 'value': 'number of reviews'}
+                                ],
+                                value='count',
+                                clearable=False
+                            )
+                        ], style={'width': '30%', 'marginBottom': '20px'}),
+
+                        dcc.Graph(id='neighborhood-comparison-graph', style={'height': '70vh'})
+                    ], style={'padding': '20px'})
+                ]),
+
+                # Tab 4: Advanced Analysis
+                dcc.Tab(label="Advanced Analysis", children=[
+                    html.Div([
+                        html.P("Use the parallel coordinates plot to explore relationships between multiple variables.",
+                               style={'marginBottom': '10px'}),
+
+                        # Axis selectors for PCP
+                        html.Div([
+                            html.Div([
+                                html.Label(f"Axis {i + 1}", style={'fontWeight': 'bold'}),
+                                dcc.Dropdown(
+                                    id=f'axis-{i + 1}',
+                                    options=[{'label': c, 'value': c} for c in AXIS_OPTS],
+                                    value=AXIS_OPTS[i] if i < len(AXIS_OPTS) else AXIS_OPTS[0],
+                                    clearable=False
+                                )
+                            ], style={'flex': '1', 'minWidth': '150px', 'marginRight': '10px'})
+                            for i in range(5)
+                        ], style={'display': 'flex', 'marginBottom': '20px'}),
+
+                        # PCP
+                        dcc.Graph(id='pcp-graph', style={'height': '60vh'})
+                    ], style={'padding': '20px'})
+                ])
+            ], style={'marginBottom': '20px'})
+        ], style={'width': '75%', 'paddingLeft': '20px'})
+    ], style={'display': 'flex'})
+])
+
+
+# Callbacks
 @app.callback(
-  [Output('map-graph','figure'),
-   Output('pcp-graph','figure')],
-  [Input('price-slider','value'),
-   Input('neigh-dropdown','value'),
-   Input('roomtype-checklist','value')] +
-  [Input(f'axis-{i+1}','value') for i in range(5)]
+    [Output('map-graph', 'figure'),
+     Output('room-type-graph', 'figure'),
+     Output('price-borough-graph', 'figure'),
+     Output('cancellation-graph', 'figure'),
+     Output('min-nights-graph', 'figure'),
+     Output('neighborhood-comparison-graph', 'figure'),
+     Output('pcp-graph', 'figure'),
+     Output('stats-container', 'children')],
+    [Input('price-slider', 'value'),
+     Input('neigh-dropdown', 'value'),
+     Input('roomtype-checklist', 'value'),
+     Input('rating-slider', 'value'),
+     Input('min-nights-slider', 'value'),
+     Input('neighborhood-metric-dropdown', 'value'),
+     Input('axis-1', 'value'),
+     Input('axis-2', 'value'),
+     Input('axis-3', 'value'),
+     Input('axis-4', 'value'),
+     Input('axis-5', 'value')]
 )
-def update_outputs(price_range, selected_groups, selected_rooms,
-                   axis1, axis2, axis3, axis4, axis5):
-    
-    axes = [axis1, axis2, axis3, axis4, axis5]
-
+def update_outputs(price_range, selected_groups, selected_rooms, min_rating,
+                   min_nights, neighborhood_metric, axis1, axis2, axis3, axis4, axis5):
+    # Filter data based on inputs
     low, high = price_range
 
-    # Filter step by step
+    # Apply all filters
     dff = df[(df['price'] >= low) & (df['price'] <= high)]
     if selected_groups:
         dff = dff[dff['neighbourhood group'].isin(selected_groups)]
     if selected_rooms:
         dff = dff[dff['room type'].isin(selected_rooms)]
+    if min_rating > 0:
+        dff = dff[dff['review rate number'] >= min_rating]
+    if min_nights > 1:
+        dff = dff[dff['minimum nights'] >= min_nights]
 
-    # Map figure (clustered)
-    fig = go.Figure(go.Scattermapbox(
+    # If filtered dataframe is empty, return empty figures
+    if len(dff) == 0:
+        return [go.Figure() for _ in range(7)] + [html.P("No data matches the selected filters.")]
+
+    # 1. Map figure - Using Viridis colorscale which is colorblind-friendly
+    map_fig = go.Figure(go.Scattermapbox(
         lat=dff['lat'],
         lon=dff['long'],
         mode='markers',
-        text=dff.apply(lambda r: f"{r['name']}<br>${r['price']:.0f}<br>Score: {r['score']}", axis=1),
+        text=dff['hover_text'],
         hoverinfo='text',
         marker=go.scattermapbox.Marker(
             size=point_size,
-            color=point_color,
-            showscale=False
+            color=dff['score'],
+            colorscale=COLORBLIND_CONTINUOUS,
+            showscale=True,
+            colorbar=dict(title='Score'),
+            cmin=0,
+            cmax=100
         ),
         cluster=go.scattermapbox.Cluster(
             enabled=True,
             step=cluster_steps,
             size=cluster_sizes,
-            color=cluster_colors,
+            color=cluster_colors,  # Already using colorblind-friendly colors
             maxzoom=15,
             opacity=0.8
         )
     ))
 
-    # --- parallel coordinates ---
-    # ensure all chosen axes exist and drop NaNs
-    # 1) Only keep the first occurrence of each axis and ensure it's in the DF
+    map_fig.update_layout(
+        mapbox_style='open-street-map',
+        mapbox_center={'lat': dff['lat'].mean(), 'lon': dff['long'].mean()},
+        mapbox_zoom=10,
+        margin={'l': 0, 'r': 0, 't': 0, 'b': 0},
+        height=600
+    )
+
+    # 2. Room type distribution by borough - Using colorblind-friendly palette
+    room_type_fig = px.bar(
+        borough_room_counts[borough_room_counts['neighbourhood group'].isin(selected_groups)],
+        x='neighbourhood group',
+        y='count',
+        color='room type',
+        barmode='stack',
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
+        labels={'count': 'Number of Listings', 'neighbourhood group': 'Borough', 'room type': 'Room Type'}
+    )
+
+    room_type_fig.update_layout(
+        xaxis_title='Borough',
+        yaxis_title='Number of Listings',
+        legend_title='Room Type',
+        height=400
+    )
+
+    # 3. Average price by borough and room type - Using colorblind-friendly palette
+    borough_price_data = dff.groupby(['neighbourhood group', 'room type'])['price'].mean().reset_index()
+    price_borough_fig = px.bar(
+        borough_price_data,
+        x='neighbourhood group',
+        y='price',
+        color='room type',
+        barmode='group',
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
+        labels={'price': 'Average Price ($)', 'neighbourhood group': 'Borough', 'room type': 'Room Type'}
+    )
+
+    price_borough_fig.update_layout(
+        xaxis_title='Borough',
+        yaxis_title='Average Price ($)',
+        legend_title='Room Type',
+        height=400
+    )
+
+    # 4. Cancellation policy distribution - Using colorblind-friendly palette
+    cancellation_data = dff['cancellation_policy'].value_counts().reset_index()
+    cancellation_data.columns = ['policy', 'count']
+
+    cancellation_fig = px.pie(
+        cancellation_data,
+        values='count',
+        names='policy',
+        color_discrete_sequence=COLORBLIND_PALETTE,  # Updated to colorblind-friendly palette
+        hole=0.4
+    )
+
+    cancellation_fig.update_layout(
+        legend_title='Cancellation Policy',
+        height=400
+    )
+
+    # 5. Average minimum nights by room type - Using colorblind-friendly palette
+    min_nights_data = dff.groupby(['room type'])['minimum nights'].mean().reset_index()
+    min_nights_fig = px.bar(
+        min_nights_data,
+        x='room type',
+        y='minimum nights',
+        color='room type',
+        color_discrete_sequence=COLORBLIND_DISCRETE,  # Updated to colorblind-friendly palette
+        labels={'minimum nights': 'Average Minimum Nights', 'room type': 'Room Type'}
+    )
+
+    min_nights_fig.update_layout(
+        xaxis_title='Room Type',
+        yaxis_title='Average Minimum Nights',
+        showlegend=False,
+        height=400
+    )
+
+    # 6. Neighborhood comparison - Using colorblind-friendly palette
+    neighborhood_data = dff.groupby('neighbourhood').agg({
+        'price': 'mean',
+        'score': 'mean',
+        'review rate number': 'mean',
+        'number of reviews': 'mean',
+        'neighbourhood group': 'first',
+    }).reset_index()
+    # Add count separately since 'id' is the index
+    count_data = dff.groupby('neighbourhood').size().reset_index(name='count')
+    neighborhood_data = neighborhood_data.merge(count_data, on='neighbourhood')
+
+    # Sort by the selected metric
+    neighborhood_data = neighborhood_data.sort_values(neighborhood_metric, ascending=False).head(20)
+
+    # Set the color based on borough
+    neighborhood_fig = px.bar(
+        neighborhood_data,
+        x='neighbourhood',
+        y=neighborhood_metric,
+        color='neighbourhood group',
+        color_discrete_sequence=COLORBLIND_PALETTE,  # Updated to colorblind-friendly palette
+        labels={
+            'neighbourhood': 'Neighborhood',
+            'count': 'Number of Listings',
+            'price': 'Average Price ($)',
+            'score': 'Average Score',
+            'review rate number': 'Average Review Rating',
+            'number of reviews': 'Average Number of Reviews',
+            'neighbourhood group': 'Borough'
+        }
+    )
+
+    metric_title = {
+        'count': 'Number of Listings',
+        'price': 'Average Price ($)',
+        'score': 'Average Score',
+        'review rate number': 'Average Review Rating',
+        'number of reviews': 'Average Number of Reviews'
+    }
+
+    neighborhood_fig.update_layout(
+        xaxis_title='Neighborhood',
+        yaxis_title=metric_title[neighborhood_metric],
+        legend_title='Borough',
+        height=600,
+        xaxis={'categoryorder': 'total descending', 'tickangle': 45}
+    )
+
+    # 7. Parallel Coordinates Plot - Using colorblind-friendly colorscale
+    axes = [axis1, axis2, axis3, axis4, axis5]
+
+    # Only keep the first occurrence of each axis
     dims = []
     for ax in axes:
         if ax in dff.columns and ax not in dims:
             dims.append(ax)
 
-    # 2) Pad with a safe default (e.g. 'price') so we always have 5
-    while len(dims) < NUM_AXES:
-        dims.append('price')
+    # Pad with defaults if needed
+    while len(dims) < 5:
+        for ax in AXIS_OPTS:
+            if ax not in dims:
+                dims.append(ax)
+                break
 
-    pcp = px.parallel_coordinates(
-    dff.dropna(subset=dims),
-    dimensions=dims,
-    color='score',
-    color_continuous_scale=px.colors.sequential.Viridis
+    # Keep only first 5 dimensions
+    dims = dims[:5]
+
+    # Create PCP with colorblind-friendly colorscale
+    pcp_fig = px.parallel_coordinates(
+        dff.dropna(subset=dims),
+        dimensions=dims,
+        color='score',
+        color_continuous_scale=COLORBLIND_CONTINUOUS,  # Using Viridis which is colorblind-friendly
+        labels={
+            'price': 'Price ($)',
+            'service_fee': 'Service Fee ($)',
+            'minimum nights': 'Minimum Nights',
+            'number of reviews': 'Number of Reviews',
+            'reviews per month': 'Reviews per Month',
+            'review rate number': 'Review Rating',
+            'calculated host listings count': 'Host Listings Count',
+            'availability 365': 'Availability (days/year)',
+            'score': 'Score'
+        }
     )
-    pcp.update_layout(margin={'t':20,'b':20,'l':20,'r':20})
 
-    fig.update_layout(
-        mapbox_style='open-street-map',
-        mapbox_center={'lat': df['lat'].mean(), 'lon': df['long'].mean()},
-        mapbox_zoom=10,
-        margin={'l':0,'r':0,'t':30,'b':0}
+    pcp_fig.update_layout(
+        margin={'t': 30, 'b': 30, 'l': 30, 'r': 30},
+        height=500,
+        coloraxis_colorbar=dict(title='Score')
     )
 
-    return fig, pcp
+    # 8. Statistics container
+    stats_container = html.Div([
+        html.P(f"Total Listings: {len(dff)}"),
+        html.P(f"Average Price: ${dff['price'].mean():.2f}"),
+        html.P(f"Average Score: {dff['score'].mean():.2f}"),
+        html.P(f"Average Review Rating: {dff['review rate number'].mean():.2f}"),
+        html.P(f"Average Minimum Nights: {dff['minimum nights'].mean():.2f}")
+    ])
+
+    return map_fig, room_type_fig, price_borough_fig, cancellation_fig, min_nights_fig, neighborhood_fig, pcp_fig, stats_container
+
 
 if __name__ == '__main__':
     app.run(debug=True)
